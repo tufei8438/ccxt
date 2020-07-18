@@ -3,7 +3,7 @@
 //  ---------------------------------------------------------------------------
 
 const Exchange = require ('./base/Exchange');
-const { BadSymbol, ExchangeError, ExchangeNotAvailable, AuthenticationError, InvalidOrder, InsufficientFunds, OrderNotFound, DDoSProtection, PermissionDenied, AddressPending, OnMaintenance } = require ('./base/errors');
+const { BadSymbol, ExchangeError, ExchangeNotAvailable, AuthenticationError, InvalidOrder, InsufficientFunds, OrderNotFound, DDoSProtection, PermissionDenied, AddressPending, OnMaintenance, BadRequest } = require ('./base/errors');
 const { TRUNCATE, DECIMAL_PLACES } = require ('./base/functions/number');
 
 //  ---------------------------------------------------------------------------
@@ -30,26 +30,25 @@ module.exports = class bittrex extends Exchange {
                 'fetchOrder': true,
                 'fetchOpenOrders': true,
                 'fetchTickers': true,
+                'fetchTime': true,
                 'withdraw': true,
                 'fetchDeposits': true,
                 'fetchWithdrawals': true,
                 'fetchTransactions': false,
             },
             'timeframes': {
-                '1m': 'oneMin',
-                '5m': 'fiveMin',
-                '30m': 'thirtyMin',
-                '1h': 'hour',
-                '1d': 'day',
+                '1m': 'MINUTE_1',
+                '5m': 'MINUTE_5',
+                '1h': 'HOUR_1',
+                '1d': 'DAY_1',
             },
             'hostname': 'bittrex.com',
             'urls': {
-                'logo': 'https://user-images.githubusercontent.com/1294454/27766352-cf0b3c26-5ed5-11e7-82b7-f3826b7a97d8.jpg',
+                'logo': 'https://user-images.githubusercontent.com/51840849/87153921-edf53180-c2c0-11ea-96b9-f2a9a95a455b.jpg',
                 'api': {
                     'public': 'https://{hostname}/api',
                     'account': 'https://{hostname}/api',
                     'market': 'https://{hostname}/api',
-                    'v2': 'https://{hostname}/api/v2.0/pub',
                     'v3': 'https://api.bittrex.com/v3',
                     'v3public': 'https://api.bittrex.com/v3',
                 },
@@ -111,17 +110,7 @@ module.exports = class bittrex extends Exchange {
                         'markets/{marketSymbol}/trades',
                         'markets/{marketSymbol}/ticker',
                         'markets/{marketSymbol}/candles',
-                    ],
-                },
-                'v2': {
-                    'get': [
-                        'currencies/GetBTCPrice',
-                        'currencies/GetWalletHealth',
-                        'general/GetLatestAlert',
-                        'market/GetTicks',
-                        'market/GetLatestTick',
-                        'Markets/GetMarketSummaries',
-                        'market/GetLatestTick',
+                        'markets/{marketSymbol}/candles/{candleInterval}/historical/{year}/{month}/{day}',
                     ],
                 },
                 'public': {
@@ -209,6 +198,8 @@ module.exports = class bittrex extends Exchange {
             },
             'exceptions': {
                 'exact': {
+                    'BAD_REQUEST': BadRequest, // {"code":"BAD_REQUEST","detail":"Refer to the data field for specific field validation failures.","data":{"invalidRequestParameter":"day"}}
+                    'STARTDATE_OUT_OF_RANGE': BadRequest, // {"code":"STARTDATE_OUT_OF_RANGE"}
                     // 'Call to Cancel was throttled. Try again in 60 seconds.': DDoSProtection,
                     // 'Call to GetBalances was throttled. Try again in 60 seconds.': DDoSProtection,
                     'APISIGN_NOT_PROVIDED': AuthenticationError,
@@ -310,9 +301,9 @@ module.exports = class bittrex extends Exchange {
             const market = response[i];
             const baseId = this.safeString (market, 'baseCurrencySymbol');
             const quoteId = this.safeString (market, 'quoteCurrencySymbol');
-            // bittrex v2 uses inverted pairs, v3 uses regular pairs
-            // we use v3 for fetchMarkets and v2 throughout the rest of this implementation
-            // therefore we swap the base ←→ quote here to be v2-compatible
+            // bittrex v1 uses inverted pairs, v3 uses regular pairs
+            // we use v3 for fetchMarkets and v1 throughout the rest of this implementation
+            // therefore we swap the base ←→ quote here to be v1-compatible
             // https://github.com/ccxt/ccxt/issues/5634
             // const id = this.safeString (market, 'symbol');
             const id = quoteId + this.options['symbolSeparator'] + baseId;
@@ -609,6 +600,16 @@ module.exports = class bittrex extends Exchange {
         };
     }
 
+    async fetchTime (params = {}) {
+        const response = await this.v3GetPing (params);
+        //
+        //     {
+        //         "serverTime": 1594596023162
+        //     }
+        //
+        return this.safeInteger (response, 'serverTime');
+    }
+
     async fetchTrades (symbol, since = undefined, limit = undefined, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
@@ -624,31 +625,61 @@ module.exports = class bittrex extends Exchange {
         throw new ExchangeError (this.id + ' fetchTrades() returned undefined response');
     }
 
-    parseOHLCV (ohlcv, market = undefined, timeframe = '1d', since = undefined, limit = undefined) {
-        const timestamp = this.parse8601 (ohlcv['T'] + '+00:00');
+    parseOHLCV (ohlcv, market = undefined) {
+        //
+        //     {
+        //         "startsAt":"2020-06-12T02:35:00Z",
+        //         "open":"0.02493753",
+        //         "high":"0.02493753",
+        //         "low":"0.02493753",
+        //         "close":"0.02493753",
+        //         "volume":"0.09590123",
+        //         "quoteVolume":"0.00239153"
+        //     }
+        //
         return [
-            timestamp,
-            ohlcv['O'],
-            ohlcv['H'],
-            ohlcv['L'],
-            ohlcv['C'],
-            ohlcv['V'],
+            this.parse8601 (this.safeString (ohlcv, 'startsAt')),
+            this.safeFloat (ohlcv, 'open'),
+            this.safeFloat (ohlcv, 'high'),
+            this.safeFloat (ohlcv, 'low'),
+            this.safeFloat (ohlcv, 'close'),
+            this.safeFloat (ohlcv, 'volume'),
         ];
     }
 
     async fetchOHLCV (symbol, timeframe = '1m', since = undefined, limit = undefined, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
+        const reverseId = market['baseId'] + '-' + market['quoteId'];
         const request = {
-            'tickInterval': this.timeframes[timeframe],
-            'marketName': market['id'],
+            'candleInterval': this.timeframes[timeframe],
+            'marketSymbol': reverseId,
         };
-        const response = await this.v2GetMarketGetTicks (this.extend (request, params));
-        if ('result' in response) {
-            if (response['result']) {
-                return this.parseOHLCVs (response['result'], market, timeframe, since, limit);
+        let method = 'v3publicGetMarketsMarketSymbolCandles';
+        if (since !== undefined) {
+            const now = this.milliseconds ();
+            const difference = Math.abs (now - since);
+            if (difference > 86400000) {
+                method = 'v3publicGetMarketsMarketSymbolCandlesCandleIntervalHistoricalYearMonthDay';
+                const date = this.ymd (since);
+                const parts = date.split ('-');
+                const year = this.safeInteger (parts, 0);
+                const month = this.safeInteger (parts, 1);
+                const day = this.safeInteger (parts, 2);
+                request['year'] = year;
+                request['month'] = month;
+                request['day'] = day;
             }
         }
+        const response = await this[method] (this.extend (request, params));
+        //
+        //     [
+        //         {"startsAt":"2020-06-12T02:35:00Z","open":"0.02493753","high":"0.02493753","low":"0.02493753","close":"0.02493753","volume":"0.09590123","quoteVolume":"0.00239153"},
+        //         {"startsAt":"2020-06-12T02:40:00Z","open":"0.02491874","high":"0.02491874","low":"0.02490970","close":"0.02490970","volume":"0.04515695","quoteVolume":"0.00112505"},
+        //         {"startsAt":"2020-06-12T02:45:00Z","open":"0.02490753","high":"0.02493143","low":"0.02490753","close":"0.02493143","volume":"0.17769640","quoteVolume":"0.00442663"}
+        //     ]
+        //
+        return this.parseOHLCVs (response, market, timeframe, since, limit);
     }
 
     async fetchOpenOrders (symbol = undefined, since = undefined, limit = undefined, params = {}) {
@@ -810,8 +841,9 @@ module.exports = class bittrex extends Exchange {
         //
         // we cannot filter by `since` timestamp, as it isn't set by Bittrex
         // see https://github.com/ccxt/ccxt/issues/4067
-        // return this.parseTransactions (response['result'], currency, since, limit);
-        return this.parseTransactions (response['result'], currency, undefined, limit);
+        const result = this.safeValue (response, 'result', []);
+        // return this.parseTransactions (result, currency, since, limit);
+        return this.parseTransactions (result, currency, undefined, limit);
     }
 
     async fetchWithdrawals (code = undefined, since = undefined, limit = undefined, params = {}) {
@@ -931,7 +963,7 @@ module.exports = class bittrex extends Exchange {
         if (feeCost === undefined) {
             if (type === 'deposit') {
                 // according to https://support.bittrex.com/hc/en-us/articles/115000199651-What-fees-does-Bittrex-charge-
-                feeCost = 0; // FIXME: remove hardcoded value that may change any time
+                feeCost = 0;
             }
         }
         return {
@@ -1094,8 +1126,12 @@ module.exports = class bittrex extends Exchange {
         //     }
         //
         let side = this.safeString2 (order, 'OrderType', 'Type');
-        const isBuyOrder = (side === 'LIMIT_BUY') || (side === 'BUY');
-        const isSellOrder = (side === 'LIMIT_SELL') || (side === 'SELL');
+        const isBuyOrder = (side === 'LIMIT_BUY') || (side === 'BUY') || (side === 'MARKET_BUY');
+        const isSellOrder = (side === 'LIMIT_SELL') || (side === 'SELL') || (side === 'MARKET_SELL');
+        let type = 'limit';
+        if ((side === 'MARKET_BUY') || (side === 'MARKET_SELL')) {
+            type = 'market';
+        }
         if (isBuyOrder) {
             side = 'buy';
         }
@@ -1199,7 +1235,7 @@ module.exports = class bittrex extends Exchange {
             'datetime': this.iso8601 (timestamp),
             'lastTradeTimestamp': lastTradeTimestamp,
             'symbol': symbol,
-            'type': 'limit',
+            'type': type,
             'side': side,
             'price': price,
             'cost': cost,
@@ -1306,7 +1342,7 @@ module.exports = class bittrex extends Exchange {
             market = this.market (symbol);
             // because of this line we will have to rethink the entire v3
             // in other words, markets define all the rest of the API
-            // and v3 market ids are reversed in comparison to v2
+            // and v3 market ids are reversed in comparison to v1
             // v3 has to be a completely separate implementation
             // otherwise we will have to shuffle symbols and currencies everywhere
             // which is prone to errors, as was shown here
@@ -1380,21 +1416,18 @@ module.exports = class bittrex extends Exchange {
         let url = this.implodeParams (this.urls['api'][api], {
             'hostname': this.hostname,
         }) + '/';
-        if (api !== 'v2' && api !== 'v3' && api !== 'v3public') {
+        if (api !== 'v3' && api !== 'v3public') {
             url += this.version + '/';
         }
         if (api === 'public') {
-            url += api + '/' + method.toLowerCase () + path;
+            url += api + '/' + method.toLowerCase () + this.implodeParams (path, params);
+            params = this.omit (params, this.extractParams (path));
             if (Object.keys (params).length) {
                 url += '?' + this.urlencode (params);
             }
         } else if (api === 'v3public') {
-            url += path;
-            if (Object.keys (params).length) {
-                url += '?' + this.urlencode (params);
-            }
-        } else if (api === 'v2') {
-            url += path;
+            url += this.implodeParams (path, params);
+            params = this.omit (params, this.extractParams (path));
             if (Object.keys (params).length) {
                 url += '?' + this.urlencode (params);
             }

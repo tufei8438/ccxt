@@ -28,6 +28,7 @@ module.exports = class fcoin extends Exchange {
                 'fetchOrder': true,
                 'fetchOrders': true,
                 'fetchOrderBook': true,
+                'fetchTime': true,
                 'fetchOrderBooks': false,
                 'fetchTradingLimits': false,
                 'withdraw': false,
@@ -443,6 +444,17 @@ module.exports = class fcoin extends Exchange {
         };
     }
 
+    async fetchTime (params = {}) {
+        const response = await this.publicGetServerTime (params);
+        //
+        //     {
+        //         "status": 0,
+        //         "data": 1523430502977
+        //     }
+        //
+        return this.safeInteger (response, 'data');
+    }
+
     async fetchTrades (symbol, since = undefined, limit = 50, params = {}) {
         await this.loadMarkets ();
         const market = this.market (symbol);
@@ -636,7 +648,7 @@ module.exports = class fcoin extends Exchange {
         return this.parseOrders (response['data'], market, since, limit);
     }
 
-    parseOHLCV (ohlcv, market = undefined, timeframe = '1m', since = undefined, limit = undefined) {
+    parseOHLCV (ohlcv, market = undefined) {
         return [
             this.safeTimestamp (ohlcv, 'id'),
             this.safeFloat (ohlcv, 'open'),
@@ -664,7 +676,8 @@ module.exports = class fcoin extends Exchange {
             request['before'] = this.sum (sinceInSeconds, timerange) - 1;
         }
         const response = await this.marketGetCandlesTimeframeSymbol (this.extend (request, params));
-        return this.parseOHLCVs (response['data'], market, timeframe, since, limit);
+        const data = this.safeValue (response, 'data', []);
+        return this.parseOHLCVs (data, market, timeframe, since, limit);
     }
 
     nonce () {

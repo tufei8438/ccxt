@@ -36,26 +36,25 @@ class bittrex extends Exchange {
                 'fetchOrder' => true,
                 'fetchOpenOrders' => true,
                 'fetchTickers' => true,
+                'fetchTime' => true,
                 'withdraw' => true,
                 'fetchDeposits' => true,
                 'fetchWithdrawals' => true,
                 'fetchTransactions' => false,
             ),
             'timeframes' => array(
-                '1m' => 'oneMin',
-                '5m' => 'fiveMin',
-                '30m' => 'thirtyMin',
-                '1h' => 'hour',
-                '1d' => 'day',
+                '1m' => 'MINUTE_1',
+                '5m' => 'MINUTE_5',
+                '1h' => 'HOUR_1',
+                '1d' => 'DAY_1',
             ),
             'hostname' => 'bittrex.com',
             'urls' => array(
-                'logo' => 'https://user-images.githubusercontent.com/1294454/27766352-cf0b3c26-5ed5-11e7-82b7-f3826b7a97d8.jpg',
+                'logo' => 'https://user-images.githubusercontent.com/51840849/87153921-edf53180-c2c0-11ea-96b9-f2a9a95a455b.jpg',
                 'api' => array(
                     'public' => 'https://{hostname}/api',
                     'account' => 'https://{hostname}/api',
                     'market' => 'https://{hostname}/api',
-                    'v2' => 'https://{hostname}/api/v2.0/pub',
                     'v3' => 'https://api.bittrex.com/v3',
                     'v3public' => 'https://api.bittrex.com/v3',
                 ),
@@ -117,17 +116,7 @@ class bittrex extends Exchange {
                         'markets/{marketSymbol}/trades',
                         'markets/{marketSymbol}/ticker',
                         'markets/{marketSymbol}/candles',
-                    ),
-                ),
-                'v2' => array(
-                    'get' => array(
-                        'currencies/GetBTCPrice',
-                        'currencies/GetWalletHealth',
-                        'general/GetLatestAlert',
-                        'market/GetTicks',
-                        'market/GetLatestTick',
-                        'Markets/GetMarketSummaries',
-                        'market/GetLatestTick',
+                        'markets/{marketSymbol}/candles/{candleInterval}/historical/{year}/{month}/{day}',
                     ),
                 ),
                 'public' => array(
@@ -215,6 +204,8 @@ class bittrex extends Exchange {
             ),
             'exceptions' => array(
                 'exact' => array(
+                    'BAD_REQUEST' => '\\ccxt\\BadRequest', // array("code":"BAD_REQUEST","detail":"Refer to the data field for specific field validation failures.","data":array("invalidRequestParameter":"day"))
+                    'STARTDATE_OUT_OF_RANGE' => '\\ccxt\\BadRequest', // array("code":"STARTDATE_OUT_OF_RANGE")
                     // 'Call to Cancel was throttled. Try again in 60 seconds.' => '\\ccxt\\DDoSProtection',
                     // 'Call to GetBalances was throttled. Try again in 60 seconds.' => '\\ccxt\\DDoSProtection',
                     'APISIGN_NOT_PROVIDED' => '\\ccxt\\AuthenticationError',
@@ -316,9 +307,9 @@ class bittrex extends Exchange {
             $market = $response[$i];
             $baseId = $this->safe_string($market, 'baseCurrencySymbol');
             $quoteId = $this->safe_string($market, 'quoteCurrencySymbol');
-            // bittrex v2 uses inverted pairs, v3 uses regular pairs
-            // we use v3 for fetchMarkets and v2 throughout the rest of this implementation
-            // therefore we swap the $base ←→ $quote here to be v2-compatible
+            // bittrex v1 uses inverted pairs, v3 uses regular pairs
+            // we use v3 for fetchMarkets and v1 throughout the rest of this implementation
+            // therefore we swap the $base ←→ $quote here to be v1-compatible
             // https://github.com/ccxt/ccxt/issues/5634
             // $id = $this->safe_string($market, 'symbol');
             $id = $quoteId . $this->options['symbolSeparator'] . $baseId;
@@ -615,6 +606,16 @@ class bittrex extends Exchange {
         );
     }
 
+    public function fetch_time($params = array ()) {
+        $response = $this->v3GetPing ($params);
+        //
+        //     {
+        //         "serverTime" => 1594596023162
+        //     }
+        //
+        return $this->safe_integer($response, 'serverTime');
+    }
+
     public function fetch_trades($symbol, $since = null, $limit = null, $params = array ()) {
         $this->load_markets();
         $market = $this->market($symbol);
@@ -630,31 +631,61 @@ class bittrex extends Exchange {
         throw new ExchangeError($this->id . ' fetchTrades() returned null response');
     }
 
-    public function parse_ohlcv($ohlcv, $market = null, $timeframe = '1d', $since = null, $limit = null) {
-        $timestamp = $this->parse8601($ohlcv['T'] . '+00:00');
-        return [
-            $timestamp,
-            $ohlcv['O'],
-            $ohlcv['H'],
-            $ohlcv['L'],
-            $ohlcv['C'],
-            $ohlcv['V'],
-        ];
+    public function parse_ohlcv($ohlcv, $market = null) {
+        //
+        //     {
+        //         "startsAt":"2020-06-12T02:35:00Z",
+        //         "open":"0.02493753",
+        //         "high":"0.02493753",
+        //         "low":"0.02493753",
+        //         "close":"0.02493753",
+        //         "volume":"0.09590123",
+        //         "quoteVolume":"0.00239153"
+        //     }
+        //
+        return array(
+            $this->parse8601($this->safe_string($ohlcv, 'startsAt')),
+            $this->safe_float($ohlcv, 'open'),
+            $this->safe_float($ohlcv, 'high'),
+            $this->safe_float($ohlcv, 'low'),
+            $this->safe_float($ohlcv, 'close'),
+            $this->safe_float($ohlcv, 'volume'),
+        );
     }
 
     public function fetch_ohlcv($symbol, $timeframe = '1m', $since = null, $limit = null, $params = array ()) {
         $this->load_markets();
         $market = $this->market($symbol);
+        $reverseId = $market['baseId'] . '-' . $market['quoteId'];
         $request = array(
-            'tickInterval' => $this->timeframes[$timeframe],
-            'marketName' => $market['id'],
+            'candleInterval' => $this->timeframes[$timeframe],
+            'marketSymbol' => $reverseId,
         );
-        $response = $this->v2GetMarketGetTicks (array_merge($request, $params));
-        if (is_array($response) && array_key_exists('result', $response)) {
-            if ($response['result']) {
-                return $this->parse_ohlcvs($response['result'], $market, $timeframe, $since, $limit);
+        $method = 'v3publicGetMarketsMarketSymbolCandles';
+        if ($since !== null) {
+            $now = $this->milliseconds();
+            $difference = abs($now - $since);
+            if ($difference > 86400000) {
+                $method = 'v3publicGetMarketsMarketSymbolCandlesCandleIntervalHistoricalYearMonthDay';
+                $date = $this->ymd($since);
+                $parts = explode('-', $date);
+                $year = $this->safe_integer($parts, 0);
+                $month = $this->safe_integer($parts, 1);
+                $day = $this->safe_integer($parts, 2);
+                $request['year'] = $year;
+                $request['month'] = $month;
+                $request['day'] = $day;
             }
         }
+        $response = $this->$method (array_merge($request, $params));
+        //
+        //     array(
+        //         array("startsAt":"2020-06-12T02:35:00Z","open":"0.02493753","high":"0.02493753","low":"0.02493753","close":"0.02493753","volume":"0.09590123","quoteVolume":"0.00239153"),
+        //         array("startsAt":"2020-06-12T02:40:00Z","open":"0.02491874","high":"0.02491874","low":"0.02490970","close":"0.02490970","volume":"0.04515695","quoteVolume":"0.00112505"),
+        //         array("startsAt":"2020-06-12T02:45:00Z","open":"0.02490753","high":"0.02493143","low":"0.02490753","close":"0.02493143","volume":"0.17769640","quoteVolume":"0.00442663")
+        //     )
+        //
+        return $this->parse_ohlcvs($response, $market, $timeframe, $since, $limit);
     }
 
     public function fetch_open_orders($symbol = null, $since = null, $limit = null, $params = array ()) {
@@ -806,7 +837,7 @@ class bittrex extends Exchange {
         //
         //     { success =>    true,
         //       message =>   "",
-        //        result => array( {            Id =>  22578097,
+        //        $result => array( {            Id =>  22578097,
         //                           Amount =>  0.3,
         //                         Currency => "ETH",
         //                    Confirmations =>  15,
@@ -816,8 +847,9 @@ class bittrex extends Exchange {
         //
         // we cannot filter by `$since` timestamp, as it isn't set by Bittrex
         // see https://github.com/ccxt/ccxt/issues/4067
-        // return $this->parse_transactions($response['result'], $currency, $since, $limit);
-        return $this->parse_transactions($response['result'], $currency, null, $limit);
+        $result = $this->safe_value($response, 'result', array());
+        // return $this->parse_transactions($result, $currency, $since, $limit);
+        return $this->parse_transactions($result, $currency, null, $limit);
     }
 
     public function fetch_withdrawals($code = null, $since = null, $limit = null, $params = array ()) {
@@ -937,7 +969,7 @@ class bittrex extends Exchange {
         if ($feeCost === null) {
             if ($type === 'deposit') {
                 // according to https://support.bittrex.com/hc/en-us/articles/115000199651-What-fees-does-Bittrex-charge-
-                $feeCost = 0; // FIXME => remove hardcoded value that may change any time
+                $feeCost = 0;
             }
         }
         return array(
@@ -1100,8 +1132,12 @@ class bittrex extends Exchange {
         //     }
         //
         $side = $this->safe_string_2($order, 'OrderType', 'Type');
-        $isBuyOrder = ($side === 'LIMIT_BUY') || ($side === 'BUY');
-        $isSellOrder = ($side === 'LIMIT_SELL') || ($side === 'SELL');
+        $isBuyOrder = ($side === 'LIMIT_BUY') || ($side === 'BUY') || ($side === 'MARKET_BUY');
+        $isSellOrder = ($side === 'LIMIT_SELL') || ($side === 'SELL') || ($side === 'MARKET_SELL');
+        $type = 'limit';
+        if (($side === 'MARKET_BUY') || ($side === 'MARKET_SELL')) {
+            $type = 'market';
+        }
         if ($isBuyOrder) {
             $side = 'buy';
         }
@@ -1205,7 +1241,7 @@ class bittrex extends Exchange {
             'datetime' => $this->iso8601($timestamp),
             'lastTradeTimestamp' => $lastTradeTimestamp,
             'symbol' => $symbol,
-            'type' => 'limit',
+            'type' => $type,
             'side' => $side,
             'price' => $price,
             'cost' => $cost,
@@ -1312,7 +1348,7 @@ class bittrex extends Exchange {
             $market = $this->market($symbol);
             // because of this line we will have to rethink the entire v3
             // in other words, markets define all the rest of the API
-            // and v3 $market ids are reversed in comparison to v2
+            // and v3 $market ids are reversed in comparison to v1
             // v3 has to be a completely separate implementation
             // otherwise we will have to shuffle symbols and currencies everywhere
             // which is prone to errors, as was shown here
@@ -1386,21 +1422,18 @@ class bittrex extends Exchange {
         $url = $this->implode_params($this->urls['api'][$api], array(
             'hostname' => $this->hostname,
         )) . '/';
-        if ($api !== 'v2' && $api !== 'v3' && $api !== 'v3public') {
+        if ($api !== 'v3' && $api !== 'v3public') {
             $url .= $this->version . '/';
         }
         if ($api === 'public') {
-            $url .= $api . '/' . strtolower($method) . $path;
+            $url .= $api . '/' . strtolower($method) . $this->implode_params($path, $params);
+            $params = $this->omit($params, $this->extract_params($path));
             if ($params) {
                 $url .= '?' . $this->urlencode($params);
             }
         } else if ($api === 'v3public') {
-            $url .= $path;
-            if ($params) {
-                $url .= '?' . $this->urlencode($params);
-            }
-        } else if ($api === 'v2') {
-            $url .= $path;
+            $url .= $this->implode_params($path, $params);
+            $params = $this->omit($params, $this->extract_params($path));
             if ($params) {
                 $url .= '?' . $this->urlencode($params);
             }

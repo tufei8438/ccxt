@@ -37,6 +37,7 @@ class bigone(Exchange):
                 'fetchOpenOrders': True,
                 'fetchClosedOrders': True,
                 'fetchTickers': True,
+                'fetchTime': True,
                 'fetchWithdrawals': True,
                 'withdraw': True,
             },
@@ -361,6 +362,19 @@ class bigone(Exchange):
             result[symbol] = ticker
         return result
 
+    def fetch_time(self, params={}):
+        response = self.publicGetPing(params)
+        #
+        #     {
+        #         "data": {
+        #             "timestamp": 1527665262168391000
+        #         }
+        #     }
+        #
+        data = self.safe_value(response, 'data', {})
+        timestamp = self.safe_integer(data, 'timestamp')
+        return int(timestamp / 1000000)
+
     def fetch_order_book(self, symbol, limit=None, params={}):
         self.load_markets()
         market = self.market(symbol)
@@ -558,7 +572,7 @@ class bigone(Exchange):
         trades = self.safe_value(response, 'data', [])
         return self.parse_trades(trades, market, since, limit)
 
-    def parse_ohlcv(self, ohlcv, market=None, timeframe='1m', since=None, limit=None):
+    def parse_ohlcv(self, ohlcv, market=None):
         #
         #     {
         #         close: '0.021562',
@@ -616,8 +630,8 @@ class bigone(Exchange):
         #         ]
         #     }
         #
-        ohlcvs = self.safe_value(response, 'data', [])
-        return self.parse_ohlcvs(ohlcvs, market, timeframe, since, limit)
+        data = self.safe_value(response, 'data', [])
+        return self.parse_ohlcvs(data, market, timeframe, since, limit)
 
     def fetch_balance(self, params={}):
         self.load_markets()
@@ -1008,6 +1022,24 @@ class bigone(Exchange):
         #         "txid": "0x4643bb6b393ac20a6175c713175734a72517c63d6f73a3ca90a15356f2e967da0",
         #     }
         #
+        # withdraw
+        #
+        #     {
+        #         "id":1077391,
+        #         "customer_id":1082679,
+        #         "amount":"21.9000000000000000",
+        #         "txid":"",
+        #         "is_internal":false,
+        #         "kind":"on_chain",
+        #         "state":"PENDING",
+        #         "inserted_at":"2020-06-03T00:50:57+00:00",
+        #         "updated_at":"2020-06-03T00:50:57+00:00",
+        #         "memo":"",
+        #         "target_address":"rDYtYT3dBeuw376rvHqoZBKW3UmvguoBAf",
+        #         "fee":"0.1000000000000000",
+        #         "asset_symbol":"XRP"
+        #     }
+        #
         currencyId = self.safe_string(transaction, 'asset_symbol')
         code = self.safe_currency_code(currencyId)
         id = self.safe_integer(transaction, 'id')
@@ -1133,34 +1165,25 @@ class bigone(Exchange):
         #     {
         #         "code":0,
         #         "message":"",
-        #         "data":[
-        #             {
-        #                 "id":1,
-        #                 "customer_id":7,
-        #                 "asset_uuid":"50293b12-5be8-4f5b-b31d-d43cdd5ccc29",
-        #                 "amount":"100",
-        #                 "recipient":null,
-        #                 "state":"PENDING",
-        #                 "is_internal":true,
-        #                 "note":"asdsadsad",
-        #                 "kind":"on_chain",
-        #                 "txid":"asdasdasdsadsadsad",
-        #                 "confirms":5,
-        #                 "inserted_at":null,
-        #                 "updated_at":null,
-        #                 "completed_at":null,
-        #                 "commision":null,
-        #                 "explain":""
-        #             }
-        #         ]
+        #         "data":{
+        #             "id":1077391,
+        #             "customer_id":1082679,
+        #             "amount":"21.9000000000000000",
+        #             "txid":"",
+        #             "is_internal":false,
+        #             "kind":"on_chain",
+        #             "state":"PENDING",
+        #             "inserted_at":"2020-06-03T00:50:57+00:00",
+        #             "updated_at":"2020-06-03T00:50:57+00:00",
+        #             "memo":"",
+        #             "target_address":"rDYtYT3dBeuw376rvHqoZBKW3UmvguoBAf",
+        #             "fee":"0.1000000000000000",
+        #             "asset_symbol":"XRP"
+        #         }
         #     }
         #
-        data = self.safe_value(response, 'data', [])
-        dataLength = len(data)
-        if dataLength < 1:
-            raise ExchangeError(self.id + ' withdraw() returned an empty response')
-        transaction = data[0]
-        return self.parse_transaction(transaction, currency)
+        data = self.safe_value(response, 'data', {})
+        return self.parse_transaction(data, currency)
 
     def handle_errors(self, httpCode, reason, url, method, headers, body, response, requestHeaders, requestBody):
         if response is None:

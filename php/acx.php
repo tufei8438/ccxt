@@ -20,6 +20,7 @@ class acx extends Exchange {
             'has' => array(
                 'CORS' => true,
                 'fetchTickers' => true,
+                'fetchTime' => true,
                 'fetchOHLCV' => true,
                 'withdraw' => true,
                 'fetchOrder' => true,
@@ -266,6 +267,14 @@ class acx extends Exchange {
         );
     }
 
+    public function fetch_time($params = array ()) {
+        $response = $this->publicGetTimestamp ($params);
+        //
+        //     1594911427
+        //
+        return $response * 1000;
+    }
+
     public function fetch_trades($symbol, $since = null, $limit = null, $params = array ()) {
         $this->load_markets();
         $market = $this->market($symbol);
@@ -276,15 +285,15 @@ class acx extends Exchange {
         return $this->parse_trades($response, $market, $since, $limit);
     }
 
-    public function parse_ohlcv($ohlcv, $market = null, $timeframe = '1m', $since = null, $limit = null) {
-        return [
-            $ohlcv[0] * 1000,
-            $ohlcv[1],
-            $ohlcv[2],
-            $ohlcv[3],
-            $ohlcv[4],
-            $ohlcv[5],
-        ];
+    public function parse_ohlcv($ohlcv, $market = null) {
+        return array(
+            $this->safe_timestamp($ohlcv, 0),
+            $this->safe_float($ohlcv, 1),
+            $this->safe_float($ohlcv, 2),
+            $this->safe_float($ohlcv, 3),
+            $this->safe_float($ohlcv, 4),
+            $this->safe_float($ohlcv, 5),
+        );
     }
 
     public function fetch_ohlcv($symbol, $timeframe = '1m', $since = null, $limit = null, $params = array ()) {

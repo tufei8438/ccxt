@@ -434,7 +434,7 @@ module.exports = class okex extends Exchange {
                     '33005': ExchangeError, // { "code": 33005, "message": "repayment amount must exceed 0" }
                     '33006': ExchangeError, // { "code": 33006, "message": "loan order not found" }
                     '33007': ExchangeError, // { "code": 33007, "message": "status not found" }
-                    '33008': ExchangeError, // { "code": 33008, "message": "loan amount cannot exceed the maximum limit" }
+                    '33008': InsufficientFunds, // { "code": 33008, "message": "loan amount cannot exceed the maximum limit" }
                     '33009': ExchangeError, // { "code": 33009, "message": "user ID is blank" }
                     '33010': ExchangeError, // { "code": 33010, "message": "you cannot cancel an order during session 2 of call auction" }
                     '33011': ExchangeError, // { "code": 33011, "message": "no new market data" }
@@ -1107,7 +1107,7 @@ module.exports = class okex extends Exchange {
             const symbol = ticker['symbol'];
             result[symbol] = ticker;
         }
-        return result;
+        return this.filterByArray (result, 'symbol', symbols);
     }
 
     async fetchTickers (symbols = undefined, params = {}) {
@@ -1294,7 +1294,7 @@ module.exports = class okex extends Exchange {
         return this.parseTrades (response, market, since, limit);
     }
 
-    parseOHLCV (ohlcv, market = undefined, timeframe = '1m', since = undefined, limit = undefined) {
+    parseOHLCV (ohlcv, market = undefined) {
         //
         // spot markets
         //
@@ -1322,19 +1322,19 @@ module.exports = class okex extends Exchange {
         if (Array.isArray (ohlcv)) {
             const numElements = ohlcv.length;
             const volumeIndex = (numElements > 6) ? 6 : 5;
-            let timestamp = ohlcv[0];
+            let timestamp = this.safeValue (ohlcv, 0);
             if (typeof timestamp === 'string') {
                 timestamp = this.parse8601 (timestamp);
             }
             return [
                 timestamp, // timestamp
-                parseFloat (ohlcv[1]),            // Open
-                parseFloat (ohlcv[2]),            // High
-                parseFloat (ohlcv[3]),            // Low
-                parseFloat (ohlcv[4]),            // Close
-                // parseFloat (ohlcv[5]),         // Quote Volume
-                // parseFloat (ohlcv[6]),         // Base Volume
-                parseFloat (ohlcv[volumeIndex]),  // Volume, okex will return base volume in the 7th element for future markets
+                this.safeFloat (ohlcv, 1),            // Open
+                this.safeFloat (ohlcv, 2),            // High
+                this.safeFloat (ohlcv, 3),            // Low
+                this.safeFloat (ohlcv, 4),            // Close
+                // this.safeFloat (ohlcv, 5),         // Quote Volume
+                // this.safeFloat (ohlcv, 6),         // Base Volume
+                this.safeFloat (ohlcv, volumeIndex),  // Volume, okex will return base volume in the 7th element for future markets
             ];
         } else {
             return [
@@ -1373,37 +1373,47 @@ module.exports = class okex extends Exchange {
         //
         // spot markets
         //
-        //     [ {  close: "0.02683401",
-        //           high: "0.02683401",
-        //            low: "0.02683401",
-        //           open: "0.02683401",
-        //           time: "2018-12-17T23:47:00.000Z",
-        //         volume: "0"                         },
-        //       ...
-        //       {  close: "0.02684545",
-        //           high: "0.02685084",
-        //            low: "0.02683312",
-        //           open: "0.02683894",
-        //           time: "2018-12-17T20:28:00.000Z",
-        //         volume: "101.457222"                }  ]
+        //     [
+        //         {
+        //             close: "0.02683401",
+        //             high: "0.02683401",
+        //             low: "0.02683401",
+        //             open: "0.02683401",
+        //             time: "2018-12-17T23:47:00.000Z",
+        //             volume: "0"
+        //         },
+        //         {
+        //             close: "0.02684545",
+        //             high: "0.02685084",
+        //             low: "0.02683312",
+        //             open: "0.02683894",
+        //             time: "2018-12-17T20:28:00.000Z",
+        //             volume: "101.457222"
+        //         }
+        //     ]
         //
         // futures
         //
-        //     [ [ 1545090660000,
-        //         0.3171,
-        //         0.3174,
-        //         0.3171,
-        //         0.3173,
-        //         1648,
-        //         51930.38579450868 ],
-        //       ...
-        //       [ 1545072720000,
-        //         0.3159,
-        //         0.3161,
-        //         0.3144,
-        //         0.3149,
-        //         22886,
-        //         725179.26172331 ]    ]
+        //     [
+        //         [
+        //             1545090660000,
+        //             0.3171,
+        //             0.3174,
+        //             0.3171,
+        //             0.3173,
+        //             1648,
+        //             51930.38579450868
+        //         ],
+        //         [
+        //             1545072720000,
+        //             0.3159,
+        //             0.3161,
+        //             0.3144,
+        //             0.3149,
+        //             22886,
+        //             725179.26172331
+        //         ]
+        //     ]
         //
         return this.parseOHLCVs (response, market, timeframe, since, limit);
     }
@@ -1790,6 +1800,11 @@ module.exports = class okex extends Exchange {
             // 'client_oid': 'abcdef1234567890', // [a-z0-9]{1,32}
             // 'order_type': '0', // 0: Normal limit order (Unfilled and 0 represent normal limit order) 1: Post only 2: Fill Or Kill 3: Immediatel Or Cancel
         };
+        const clientOrderId = this.safeString2 (params, 'client_oid', 'clientOrderId');
+        if (clientOrderId !== undefined) {
+            request['client_oid'] = clientOrderId;
+            params = this.omit (params, [ 'client_oid', 'clientOrderId' ]);
+        }
         let method = undefined;
         if (market['futures'] || market['swap']) {
             const size = market['futures'] ? this.numberToString (amount) : this.amountToPrecision (symbol, amount);
@@ -1847,7 +1862,11 @@ module.exports = class okex extends Exchange {
         //         "result":true
         //     }
         //
-        return this.parseOrder (response, market);
+        const order = this.parseOrder (response, market);
+        return this.extend (order, {
+            'type': type,
+            'side': side,
+        });
     }
 
     async cancelOrder (id, symbol = undefined, params = {}) {
@@ -1856,7 +1875,11 @@ module.exports = class okex extends Exchange {
         }
         await this.loadMarkets ();
         const market = this.market (symbol);
-        const type = market['type'];
+        const defaultType = this.safeString2 (this.options, 'cancelOrder', 'defaultType', market['type']);
+        const type = this.safeString (params, 'type', defaultType);
+        if (type === undefined) {
+            throw new ArgumentsRequired (this.id + " cancelOrder requires a type parameter (one of 'spot', 'margin', 'futures', 'swap').");
+        }
         let method = type + 'PostCancelOrder';
         const request = {
             'instrument_id': market['id'],
@@ -1866,15 +1889,15 @@ module.exports = class okex extends Exchange {
         } else {
             method += 's';
         }
-        const clientOid = this.safeString (params, 'client_oid');
-        if (clientOid !== undefined) {
+        const clientOrderId = this.safeString2 (params, 'client_oid', 'clientOrderId');
+        if (clientOrderId !== undefined) {
             method += 'ClientOid';
-            request['client_oid'] = clientOid;
+            request['client_oid'] = clientOrderId;
         } else {
             method += 'OrderId';
             request['order_id'] = id;
         }
-        const query = this.omit (params, 'type');
+        const query = this.omit (params, [ 'type', 'client_oid', 'clientOrderId' ]);
         const response = await this[method] (this.extend (request, query));
         const result = ('result' in response) ? response : this.safeValue (response, market['id'], {});
         //
@@ -1996,16 +2019,9 @@ module.exports = class okex extends Exchange {
         const id = this.safeString (order, 'order_id');
         const timestamp = this.parse8601 (this.safeString (order, 'timestamp'));
         let side = this.safeString (order, 'side');
-        let type = this.safeString (order, 'type');
+        const type = this.safeString (order, 'type');
         if ((side !== 'buy') && (side !== 'sell')) {
             side = this.parseOrderSide (type);
-        }
-        if ((type !== 'limit') && (type !== 'market')) {
-            if ('pnl' in order) {
-                type = 'futures';
-            } else {
-                type = 'swap';
-            }
         }
         let symbol = undefined;
         const marketId = this.safeString (order, 'instrument_id');
@@ -2054,7 +2070,10 @@ module.exports = class okex extends Exchange {
                 'currency': feeCurrency,
             };
         }
-        const clientOrderId = this.safeString (order, 'client_oid');
+        let clientOrderId = this.safeString (order, 'client_oid');
+        if (clientOrderId.length < 1) {
+            clientOrderId = undefined; // fix empty clientOrderId string
+        }
         return {
             'info': order,
             'id': id,
@@ -2158,7 +2177,11 @@ module.exports = class okex extends Exchange {
         }
         await this.loadMarkets ();
         const market = this.market (symbol);
-        const type = market['type'];
+        const defaultType = this.safeString2 (this.options, 'fetchOrder', 'defaultType', market['type']);
+        const type = this.safeString (params, 'type', defaultType);
+        if (type === undefined) {
+            throw new ArgumentsRequired (this.id + " fetchOrder requires a type parameter (one of 'spot', 'margin', 'futures', 'swap').");
+        }
         const request = {
             'instrument_id': market['id'],
             // '-2': failed,
@@ -2482,12 +2505,14 @@ module.exports = class okex extends Exchange {
         // fetchDeposits
         //
         //     {
-        //         amount: "0.47847546",
-        //         txid: "1723573_3_0_0_WALLET",
-        //         currency: "BTC",
-        //         to: "",
-        //         timestamp: "2018-08-16T03:41:10.000Z",
-        //         status: "2"
+        //         "amount": "4.19511659",
+        //         "txid": "14c9a8c925647cdb7e5b2937ea9aefe2b29b2c273150ad3f44b3b8a4635ed437",
+        //         "currency": "XMR",
+        //         "from": "",
+        //         "to": "48PjH3ksv1fiXniKvKvyH5UtFs5WhfS2Vf7U3TwzdRJtCc7HJWvCQe56dRahyhQyTAViXZ8Nzk4gQg6o4BJBMUoxNy8y8g7",
+        //         "deposit_id": 11571659, <-- we can use this
+        //         "timestamp": "2019-10-01T14:54:19.000Z",
+        //         "status": "2"
         //     }
         //
         let type = undefined;
@@ -2502,7 +2527,7 @@ module.exports = class okex extends Exchange {
             address = addressTo;
         } else {
             // the payment_id will appear on new deposits but appears to be removed from the response after 2 months
-            id = this.safeString (transaction, 'payment_id');
+            id = this.safeString2 (transaction, 'payment_id', 'deposit_id');
             type = 'deposit';
             address = addressTo;
         }
@@ -2704,8 +2729,8 @@ module.exports = class okex extends Exchange {
         const request = {
             'instrument_id': market['id'],
             // 'order_id': id, // string
-            // 'after': '1', // return the page after the specified page number
-            // 'before': '1', // return the page before the specified page number
+            // 'after': '1', // pagination of data to return records earlier than the requested ledger_id
+            // 'before': '1', // P=pagination of data to return records newer than the requested ledger_id
             // 'limit': limit, // optional, number of results per request, default = maximum = 100
         };
         const defaultType = this.safeString2 (this.options, 'fetchMyTrades', 'defaultType');
@@ -2987,6 +3012,10 @@ module.exports = class okex extends Exchange {
         //         },
         //     ]
         //
+        const responseLength = response.length;
+        if (responseLength < 1) {
+            return [];
+        }
         const isArray = Array.isArray (response[0]);
         const isMargin = (type === 'margin');
         const entries = (isMargin && isArray) ? response[0] : response;

@@ -32,6 +32,7 @@ class fcoin extends Exchange {
                 'fetchOrder' => true,
                 'fetchOrders' => true,
                 'fetchOrderBook' => true,
+                'fetchTime' => true,
                 'fetchOrderBooks' => false,
                 'fetchTradingLimits' => false,
                 'withdraw' => false,
@@ -447,6 +448,17 @@ class fcoin extends Exchange {
         );
     }
 
+    public function fetch_time($params = array ()) {
+        $response = $this->publicGetServerTime ($params);
+        //
+        //     {
+        //         "status" => 0,
+        //         "data" => 1523430502977
+        //     }
+        //
+        return $this->safe_integer($response, 'data');
+    }
+
     public function fetch_trades($symbol, $since = null, $limit = 50, $params = array ()) {
         $this->load_markets();
         $market = $this->market($symbol);
@@ -640,7 +652,7 @@ class fcoin extends Exchange {
         return $this->parse_orders($response['data'], $market, $since, $limit);
     }
 
-    public function parse_ohlcv($ohlcv, $market = null, $timeframe = '1m', $since = null, $limit = null) {
+    public function parse_ohlcv($ohlcv, $market = null) {
         return array(
             $this->safe_timestamp($ohlcv, 'id'),
             $this->safe_float($ohlcv, 'open'),
@@ -668,7 +680,8 @@ class fcoin extends Exchange {
             $request['before'] = $this->sum($sinceInSeconds, $timerange) - 1;
         }
         $response = $this->marketGetCandlesTimeframeSymbol (array_merge($request, $params));
-        return $this->parse_ohlcvs($response['data'], $market, $timeframe, $since, $limit);
+        $data = $this->safe_value($response, 'data', array());
+        return $this->parse_ohlcvs($data, $market, $timeframe, $since, $limit);
     }
 
     public function nonce() {

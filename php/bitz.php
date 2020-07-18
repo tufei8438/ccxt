@@ -28,6 +28,7 @@ class bitz extends Exchange {
                 'fetchOrder' => true,
                 'createMarketOrder' => false,
                 'fetchDeposits' => true,
+                'fetchTime' => true,
                 'fetchWithdrawals' => true,
                 'fetchTransactions' => false,
             ),
@@ -45,7 +46,7 @@ class bitz extends Exchange {
             ),
             'hostname' => 'apiv2.bitz.com',
             'urls' => array(
-                'logo' => 'https://user-images.githubusercontent.com/1294454/35862606-4f554f14-0b5d-11e8-957d-35058c504b6f.jpg',
+                'logo' => 'https://user-images.githubusercontent.com/51840849/87443304-fec5e000-c5fd-11ea-98f8-ba8e67f7eaff.jpg',
                 'api' => array(
                     'market' => 'https://{hostname}',
                     'trade' => 'https://{hostname}',
@@ -65,6 +66,7 @@ class bitz extends Exchange {
                         'tickerall',
                         'kline',
                         'symbolList',
+                        'getServerTime',
                         'currencyRate',
                         'currencyCoinRate',
                         'coinRate',
@@ -179,7 +181,9 @@ class bitz extends Exchange {
                 '-109' => '\\ccxt\\AuthenticationError', // Invalid scretKey
                 '-110' => '\\ccxt\\DDoSProtection', // The number of access requests exceeded
                 '-111' => '\\ccxt\\PermissionDenied', // Current IP is not in the range of trusted IP
-                '-112' => '\\ccxt\\ExchangeNotAvailable', // Service is under maintenance
+                '-112' => '\\ccxt\\OnMaintenance', // Service is under maintenance
+                '-114' => '\\ccxt\\RateLimitExceeded', // The number of daily requests has reached the limit
+                '-117' => '\\ccxt\\AuthenticationError', // The apikey expires
                 '-100015' => '\\ccxt\\AuthenticationError', // Trade password error
                 '-100044' => '\\ccxt\\ExchangeError', // Fail to request data
                 '-100101' => '\\ccxt\\ExchangeError', // Invalid symbol
@@ -516,6 +520,21 @@ class bitz extends Exchange {
         return $result;
     }
 
+    public function fetch_time($params = array ()) {
+        $response = $this->marketGetGetServerTime ($params);
+        //
+        //     {
+        //         "status":200,
+        //         "msg":"",
+        //         "data":array(),
+        //         "time":1555490875,
+        //         "microtime":"0.35994200 1555490875",
+        //         "source":"api"
+        //     }
+        //
+        return $this->safe_timestamp($response, 'time');
+    }
+
     public function fetch_order_book($symbol, $limit = null, $params = array ()) {
         $this->load_markets();
         $request = array(
@@ -618,15 +637,17 @@ class bitz extends Exchange {
         return $this->parse_trades($response['data'], $market, $since, $limit);
     }
 
-    public function parse_ohlcv($ohlcv, $market = null, $timeframe = '1m', $since = null, $limit = null) {
+    public function parse_ohlcv($ohlcv, $market = null) {
         //
-        //      {     time => "1535973420000",
-        //            open => "0.03975084",
-        //            high => "0.03975084",
-        //             low => "0.03967700",
-        //           close => "0.03967700",
-        //          volume => "12.4733",
-        //        datetime => "2018-09-03 19:17:00" }
+        //     {
+        //         time => "1535973420000",
+        //         open => "0.03975084",
+        //         high => "0.03975084",
+        //         low => "0.03967700",
+        //         close => "0.03967700",
+        //         volume => "12.4733",
+        //         datetime => "2018-09-03 19:17:00"
+        //     }
         //
         return array(
             $this->safe_integer($ohlcv, 'time'),
@@ -658,35 +679,27 @@ class bitz extends Exchange {
         }
         $response = $this->marketGetKline (array_merge($request, $params));
         //
-        //     {    status =>    200,
-        //             msg =>   "",
-        //            data => {       $bars => array( array(     time => "1535973420000",
-        //                                        open => "0.03975084",
-        //                                        high => "0.03975084",
-        //                                         low => "0.03967700",
-        //                                       close => "0.03967700",
-        //                                      volume => "12.4733",
-        //                                    datetime => "2018-09-03 19:17:00" ),
-        //                                  array(     time => "1535955480000",
-        //                                        open => "0.04009900",
-        //                                        high => "0.04016745",
-        //                                         low => "0.04009900",
-        //                                       close => "0.04012074",
-        //                                      volume => "74.4803",
-        //                                    datetime => "2018-09-03 14:18:00" }  ),
-        //                    resolution =>   "1min",
-        //                        $symbol =>   "eth_btc",
-        //                          from =>   "1535973420000",
-        //                            to =>   "1535955480000",
-        //                          size =>    300                                    ),
-        //            time =>    1535973435,
-        //       microtime =>   "0.56462100 1535973435",
-        //          source =>   "api"                                                    }
+        //     {
+        //         status => 200,
+        //         msg => "",
+        //         $data => array(
+        //             $bars => array(
+        //                 array( time => "1535973420000", open => "0.03975084", high => "0.03975084", low => "0.03967700", close => "0.03967700", volume => "12.4733", datetime => "2018-09-03 19:17:00" ),
+        //                 array( time => "1535955480000", open => "0.04009900", high => "0.04016745", low => "0.04009900", close => "0.04012074", volume => "74.4803", datetime => "2018-09-03 14:18:00" ),
+        //             ),
+        //             resolution => "1min",
+        //             $symbol => "eth_btc",
+        //             from => "1535973420000",
+        //             to => "1535955480000",
+        //             size => 300
+        //         ),
+        //         time => 1535973435,
+        //         microtime => "0.56462100 1535973435",
+        //         source => "api"
+        //     }
         //
-        $bars = $this->safe_value($response['data'], 'bars', null);
-        if ($bars === null) {
-            return array();
-        }
+        $data = $this->safe_value($response, 'data', array());
+        $bars = $this->safe_value($data, 'bars', array());
         return $this->parse_ohlcvs($bars, $market, $timeframe, $since, $limit);
     }
 
